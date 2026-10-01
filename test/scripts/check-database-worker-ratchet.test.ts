@@ -80,7 +80,7 @@ it("scans working-tree source and untracked files with Git ignores and literal p
     "src/untracked.ts",
     "src/.hidden.ts",
     "src/space name.ts",
-    "src/new\nline.ts",
+    ...(process.platform === "win32" ? [] : ["src/new\nline.ts"]),
     "src/view.tsx",
     "src/common.cts",
     "extensions/plugin/runtime.js",
