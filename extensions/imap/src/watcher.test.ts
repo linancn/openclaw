@@ -298,7 +298,12 @@ async function startWatcher(
   // start() is fire-and-forget; observe the committed baseline before driving mail.
   // Authentication-failure tests intentionally never reach cursor registration.
   if (!options.rejectAuthentication && options.waitForStartup !== false) {
-    await startup;
+    await Promise.race([
+      startup,
+      connectionFailure.then((error) => {
+        throw error;
+      }),
+    ]);
   }
   return {
     server,
@@ -314,28 +319,36 @@ async function startWatcher(
 }
 
 describe("IMAP watcher protocol boundary", () => {
-  it("baselines from the final message UID when EXAMINE omits UIDNEXT", async () => {
-    const { server, state, dispatchHookAgentTurn, waitForCursor } = await startWatcher({
-      omitUidNext: true,
-      messages: existingMail(),
-    });
-    expect(await state.cursors.lookup("inbox")).toMatchObject({
-      uidValidity: "17",
-      lastSeenUid: 9007,
-    });
-    expect(dispatchHookAgentTurn).not.toHaveBeenCalled();
-    server.append("From: trusted@example.com\r\nSubject: New mail\r\n\r\nNew email");
-    await waitForCursor(9008);
-    expect(dispatchHookAgentTurn).toHaveBeenCalledTimes(1);
-    expect(dispatchHookAgentTurn).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionKey: "hook:imap:inbox:17:9008" }),
-    );
-    expect(server.commands.filter(isBaselineFetch)).toHaveLength(1);
-    expect(server.commands.find(isBaselineFetch)).toMatch(/ FETCH 3 UID$/u);
-    expect(server.commands.every((command) => !command.includes(" SELECT "))).toBe(true);
-    expect(server.commands.every((command) => !/\b(?:STORE|EXPUNGE)\b/iu.test(command))).toBe(true);
-    expect(server.commands.find(isBaselineFetch)).not.toMatch(/BODY|RFC822|ENVELOPE/iu);
-  });
+  it.each(["17", "4294967296", "9007199254740993", "9999999999999999999"])(
+    "baselines from the final message UID when EXAMINE omits UIDNEXT (UIDVALIDITY %s)",
+    async (uidValidity) => {
+      const { server, state, dispatchHookAgentTurn, waitForCursor } = await startWatcher({
+        omitUidNext: true,
+        messages: existingMail(),
+        configureServer: (fixture) => {
+          fixture.uidValidity = uidValidity;
+        },
+      });
+      expect(await state.cursors.lookup("inbox")).toMatchObject({
+        uidValidity,
+        lastSeenUid: 9007,
+      });
+      expect(dispatchHookAgentTurn).not.toHaveBeenCalled();
+      server.append("From: trusted@example.com\r\nSubject: New mail\r\n\r\nNew email");
+      await waitForCursor(9008);
+      expect(dispatchHookAgentTurn).toHaveBeenCalledTimes(1);
+      expect(dispatchHookAgentTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionKey: `hook:imap:inbox:${uidValidity}:9008` }),
+      );
+      expect(server.commands.filter(isBaselineFetch)).toHaveLength(1);
+      expect(server.commands.find(isBaselineFetch)).toMatch(/ FETCH 3 UID$/u);
+      expect(server.commands.every((command) => !command.includes(" SELECT "))).toBe(true);
+      expect(server.commands.every((command) => !/\b(?:STORE|EXPUNGE)\b/iu.test(command))).toBe(
+        true,
+      );
+      expect(server.commands.find(isBaselineFetch)).not.toMatch(/BODY|RFC822|ENVELOPE/iu);
+    },
+  );
 
   it("baselines an empty mailbox without UIDNEXT and admits its first message", async () => {
     const { server, state, dispatchHookAgentTurn, waitForCursor } = await startWatcher({
@@ -349,19 +362,25 @@ describe("IMAP watcher protocol boundary", () => {
     expect(dispatchHookAgentTurn).toHaveBeenCalledTimes(1);
   });
 
-  it("resumes persisted backlog without querying the final message UID", async () => {
-    const { server, dispatchHookAgentTurn, waitForCursor } = await startWatcher({
-      omitUidNext: true,
-      messages: existingMail(),
-      cursor: { uidValidity: "17", lastSeenUid: 505, updatedAt: 0 },
-    });
-    await waitForCursor(9007);
-    expect(server.commands.filter(isBaselineFetch)).toHaveLength(0);
-    expect(dispatchHookAgentTurn).toHaveBeenCalledTimes(1);
-    expect(dispatchHookAgentTurn).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionKey: "hook:imap:inbox:17:9007" }),
-    );
-  });
+  it.each(["17", "4294967296", "9007199254740993"])(
+    "resumes persisted backlog without querying the final message UID (UIDVALIDITY %s)",
+    async (uidValidity) => {
+      const { server, dispatchHookAgentTurn, waitForCursor } = await startWatcher({
+        omitUidNext: true,
+        messages: existingMail(),
+        cursor: { uidValidity, lastSeenUid: 505, updatedAt: 0 },
+        configureServer: (fixture) => {
+          fixture.uidValidity = uidValidity;
+        },
+      });
+      await waitForCursor(9007);
+      expect(server.commands.filter(isBaselineFetch)).toHaveLength(0);
+      expect(dispatchHookAgentTurn).toHaveBeenCalledTimes(1);
+      expect(dispatchHookAgentTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionKey: `hook:imap:inbox:${uidValidity}:9007` }),
+      );
+    },
+  );
 
   it("re-baselines an obsolete out-of-range cursor without UIDNEXT and skips old mail", async () => {
     const { server, state, dispatchHookAgentTurn, waitForCursor } = await startWatcher({

@@ -48,7 +48,9 @@ export async function initializeImapCursor(
   resolveBaseline: () => Promise<number>,
   isActive: () => boolean,
 ): Promise<{ kind: "baseline" | "reset" | "resume"; cursor: ImapCursor } | undefined> {
-  if (!/^[1-9]\d{0,9}$/u.test(uidValidity) || BigInt(uidValidity) > BigInt(MAX_IMAP_UID)) {
+  // ImapFlow supports UIDVALIDITY values wider than message UIDs. Preserve the
+  // mailbox identity as a decimal string without narrowing its range or precision.
+  if (!/^[1-9]\d*$/u.test(uidValidity)) {
     throw new Error("imap: invalid mailbox UIDVALIDITY");
   }
   const existing = await state.cursors.lookup(accountId);
