@@ -55,12 +55,14 @@ export async function initializeImapCursor(
   if (!isActive()) {
     return undefined;
   }
-  if (existing && !isCursorUid(existing.lastSeenUid)) {
-    throw new Error("imap: invalid persisted cursor UID");
-  }
   if (existing?.uidValidity === uidValidity) {
+    if (!isCursorUid(existing.lastSeenUid)) {
+      throw new Error("imap: invalid persisted cursor UID");
+    }
     return { kind: "resume", cursor: existing };
   }
+  // A changed UIDVALIDITY invalidates the old UID space, including any invalid
+  // UID saved by an older initializer. Only the new baseline must be usable.
   // Resolving a new baseline may perform I/O. A resumed cursor must never depend
   // on that lookup or skip mail that arrived while the watcher was offline.
   const lastSeenUid = await resolveBaseline();

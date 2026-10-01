@@ -363,11 +363,11 @@ describe("IMAP watcher protocol boundary", () => {
     );
   });
 
-  it("re-baselines changed UIDVALIDITY without UIDNEXT and skips old mail", async () => {
+  it("re-baselines an obsolete out-of-range cursor without UIDNEXT and skips old mail", async () => {
     const { server, state, dispatchHookAgentTurn, waitForCursor } = await startWatcher({
       omitUidNext: true,
       messages: existingMail(),
-      cursor: { uidValidity: "16", lastSeenUid: 40, updatedAt: 0 },
+      cursor: { uidValidity: "16", lastSeenUid: 4_294_967_296, updatedAt: 0 },
     });
     expect(await state.cursors.lookup("inbox")).toMatchObject({
       uidValidity: "17",

@@ -84,7 +84,7 @@ describe("IMAP cursor initialization", () => {
   });
 
   it.each([undefined, null, Number.NaN, Infinity, -1, 0.5, "42", 4294967296])(
-    "rejects an invalid persisted cursor without replacing it: %s",
+    "rejects an invalid persisted cursor with matching UIDVALIDITY: %s",
     async (lastSeenUid) => {
       const { state } = createImapTestRuntime();
       const corruptCursor = { ...previous, lastSeenUid: lastSeenUid as number };
@@ -92,11 +92,9 @@ describe("IMAP cursor initialization", () => {
       const register = vi.spyOn(state.cursors, "register");
       const resolveBaseline = vi.fn(async () => 0);
 
-      for (const uidValidity of ["1", "2"]) {
-        await expect(
-          initializeImapCursor(state, "account", uidValidity, resolveBaseline, () => true),
-        ).rejects.toThrow(/cursor UID/);
-      }
+      await expect(
+        initializeImapCursor(state, "account", "1", resolveBaseline, () => true),
+      ).rejects.toThrow(/cursor UID/);
       expect(resolveBaseline).not.toHaveBeenCalled();
       expect(register).not.toHaveBeenCalled();
       expect(await state.cursors.lookup("account")).toEqual(corruptCursor);
