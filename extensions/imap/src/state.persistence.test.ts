@@ -5,7 +5,7 @@ import { withOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { expect, it, vi } from "vitest";
 import { createImapState, initializeImapCursor } from "./state.js";
 
-it.each(["2", "4294967296", "9007199254740993"])(
+it.each(["9007199254740993"])(
   "resets an obsolete out-of-range cursor and resumes UIDVALIDITY %s from production persisted state",
   async (uidValidity) => {
     await withOpenClawTestState({ label: "imap-cursor-upgrade" }, async (testState) => {

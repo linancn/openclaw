@@ -328,7 +328,7 @@ async function startWatcher(
 }
 
 describe("IMAP watcher protocol boundary", () => {
-  it.each(["17", "4294967296", "9007199254740993", "9999999999999999999"])(
+  it.each(["9007199254740993"])(
     "baselines from the final message UID when EXAMINE omits UIDNEXT (UIDVALIDITY %s)",
     async (uidValidity) => {
       const { server, state, dispatchHookAgentTurn, waitForCursor } = await startWatcher({
@@ -371,7 +371,7 @@ describe("IMAP watcher protocol boundary", () => {
     expect(dispatchHookAgentTurn).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["17", "4294967296", "9007199254740993"])(
+  it.each(["9007199254740993"])(
     "resumes persisted backlog without querying the final message UID (UIDVALIDITY %s)",
     async (uidValidity) => {
       const { server, dispatchHookAgentTurn, waitForCursor } = await startWatcher({

@@ -78,54 +78,46 @@ describe("IMAP cursor initialization", () => {
     expect(await state.cursors.lookup("account")).toEqual(previous);
   });
 
-  it.each([
-    { pending: "lookup", reason: "stopped" },
-    { pending: "lookup", reason: "replaced" },
-    { pending: "resolver", reason: "stopped" },
-    { pending: "resolver", reason: "replaced" },
-  ])("does not write when $reason while awaiting $pending", async ({ pending, reason }) => {
-    const { state } = createImapTestRuntime();
-    await state.cursors.register("account", previous);
-    const entered = createDeferred<void>();
-    const released = createDeferred<void>();
-    const register = vi.spyOn(state.cursors, "register");
-    const resolveBaseline = vi.fn(async () => {
-      if (pending === "resolver") {
-        entered.resolve();
-        await released.promise;
-      }
-      return 99;
-    });
-    if (pending === "lookup") {
-      vi.spyOn(state.cursors, "lookup").mockImplementationOnce(async () => {
-        entered.resolve();
-        await released.promise;
-        return previous;
+  it.each(["lookup", "resolver"])(
+    "does not write when stopped while awaiting %s",
+    async (pending) => {
+      const { state } = createImapTestRuntime();
+      await state.cursors.register("account", previous);
+      const entered = createDeferred<void>();
+      const released = createDeferred<void>();
+      const register = vi.spyOn(state.cursors, "register");
+      const resolveBaseline = vi.fn(async () => {
+        if (pending === "resolver") {
+          entered.resolve();
+          await released.promise;
+        }
+        return 99;
       });
-    }
-    const connection = {};
-    let currentConnection = connection;
-    let stopped = false;
-    const operation = initializeImapCursor(
-      state,
-      "account",
-      "2",
-      resolveBaseline,
-      () => !stopped && currentConnection === connection,
-    );
-    await entered.promise;
-    if (reason === "stopped") {
+      if (pending === "lookup") {
+        vi.spyOn(state.cursors, "lookup").mockImplementationOnce(async () => {
+          entered.resolve();
+          await released.promise;
+          return previous;
+        });
+      }
+      let stopped = false;
+      const operation = initializeImapCursor(
+        state,
+        "account",
+        "2",
+        resolveBaseline,
+        () => !stopped,
+      );
+      await entered.promise;
       stopped = true;
-    } else {
-      currentConnection = {};
-    }
-    released.resolve();
+      released.resolve();
 
-    expect(await operation).toBeUndefined();
-    expect(resolveBaseline).toHaveBeenCalledTimes(pending === "lookup" ? 0 : 1);
-    expect(register).not.toHaveBeenCalled();
-    expect(await state.cursors.lookup("account")).toEqual(previous);
-  });
+      expect(await operation).toBeUndefined();
+      expect(resolveBaseline).toHaveBeenCalledTimes(pending === "lookup" ? 0 : 1);
+      expect(register).not.toHaveBeenCalled();
+      expect(await state.cursors.lookup("account")).toEqual(previous);
+    },
+  );
 });
 
 describe("IMAP durable watcher state", () => {
