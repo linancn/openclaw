@@ -775,8 +775,10 @@ describe("IMAP watcher protocol boundary", () => {
     expect(dispatchHookAgentTurn).toHaveBeenCalledTimes(4);
   });
 
-  it("skips a message the parser rejects and dispatches the next email", async () => {
-    const { server, state, dispatchHookAgentTurn, waitForCursor } = await startWatcher();
+  it("skips a message the parser rejects without UIDNEXT and dispatches the next email", async () => {
+    const { server, state, dispatchHookAgentTurn, waitForCursor } = await startWatcher({
+      omitUidNext: true,
+    });
     dispatchHookAgentTurn.mockResolvedValue({ ok: true, runId: "mail-run" });
     // mailparser rejects messages with more than 9,999 MIME child nodes.
     const part = "--b\r\nContent-Type: text/plain\r\n\r\nx\r\n";
