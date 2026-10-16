@@ -13,7 +13,6 @@ import {
   type UserTurnPromptReactionSource,
 } from "../sessions/user-turn-transcript-admission.js";
 import type { UserTurnTranscriptRecorder } from "../sessions/user-turn-transcript.types.js";
-import type { PreparedEffectUse } from "../shared/effect-authority.js";
 import {
   isDeliverableMessageChannel,
   normalizeMessageChannel,
@@ -31,7 +30,6 @@ type ScheduledMessageActionAuthority = {
   policy: ScheduledToolPolicyContext;
   assertCurrent: () => void;
   assertSourceCurrent?: () => void;
-  prepareUse?: (sourceSensitive: boolean, assertCurrent?: () => void) => Promise<PreparedEffectUse>;
   channelRequester?: CronAuthenticatedChannelRequester;
 };
 
@@ -53,6 +51,7 @@ export type DashboardMessageReadAdmission = Readonly<{
   runId: string;
   sessionKey: string;
   sessionId?: string;
+  prepare?: () => Promise<void>;
   assertCurrent: () => void;
 }>;
 
@@ -259,7 +258,6 @@ export function mintMessageActionTurnCapability(params: {
   const scheduled = params.scheduled;
   if (scheduled) {
     const assertSourceCurrent = scheduled.assertSourceCurrent;
-    const prepareUse = scheduled.prepareUse;
     capability.scheduled = {
       policy: structuredClone(scheduled.policy),
       ...(scheduled.channelRequester
@@ -269,15 +267,6 @@ export function mintMessageActionTurnCapability(params: {
         assertActive();
         scheduled.assertCurrent();
       },
-      ...(prepareUse
-        ? {
-            prepareUse: (sourceSensitive: boolean, assertCurrent?: () => void) =>
-              prepareUse(sourceSensitive, () => {
-                assertActive();
-                assertCurrent?.();
-              }),
-          }
-        : {}),
       ...(assertSourceCurrent
         ? {
             assertSourceCurrent: () => {

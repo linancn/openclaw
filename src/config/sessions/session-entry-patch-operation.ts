@@ -1,8 +1,16 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { isSubagentSessionRow } from "../../shared/session-list-visibility.js";
+import type { SessionActivitySummary } from "./activity-summary.js";
 import {
   projectAmbientTranscriptWatermark,
   type AmbientTranscriptWatermarkUpdate,
 } from "./ambient-transcript-watermark-projection.js";
+import {
+  projectLastRoutePatch,
+  projectSessionMetaPatch,
+  type PreparedSessionMetaPatch,
+} from "./metadata-projection.js";
+import { resolveSessionObserverDigestForLifecycle } from "./observer-digest.js";
 import { buildRestartRecoveryClaimCleanupPatch } from "./restart-recovery-state.js";
 import { preserveSqliteSameKeySessionRolloverLineage } from "./session-entry-lineage.js";
 import { projectCompactionAccountingPatch } from "./session-entry-projection.js";
@@ -12,11 +20,11 @@ import {
   projectSessionEntryUsageUpdate,
   type SessionEntryUsageUpdate,
 } from "./session-entry-usage.js";
-import type {
-  SessionTranscriptTurnExpectedState,
-  SessionTranscriptTurnLifecyclePatch,
-} from "./session-transcript-turn-lifecycle.types.js";
-import { sessionMatchesExpectedTranscriptTurn } from "./session-transcript-turn-state.js";
+import {
+  projectSessionLifecyclePatch,
+  type SessionLifecyclePatchInput,
+  type SessionLifecyclePatchEffects,
+} from "./session-run-lifecycle-projection.js";
 import {
   mergeSessionEntry,
   mergeSessionEntryPreserveActivity,
@@ -54,18 +62,30 @@ export type SessionEntryBookkeepingReducer =
 /** Closed internal operations; arbitrary updater callbacks retain prepare/CAS. */
 type SessionEntryPatchStep = (
   | { kind: "fields"; patch: Partial<SessionEntry> }
+  | {
+      kind: "inbound-metadata";
+      metadata: PreparedSessionMetaPatch;
+      sessionKey: string;
+      creation: ReturnType<typeof buildSessionCreationStamp>;
+    }
+  | {
+      kind: "last-route";
+      route: Omit<Parameters<typeof projectLastRoutePatch>[0], "existing">;
+      creation: ReturnType<typeof buildSessionCreationStamp>;
+    }
+  | { kind: "lifecycle"; lifecycle: SessionLifecyclePatchInput }
   | { kind: "public-fields"; patch: Partial<SessionEntry> }
+  | {
+      kind: "observer-digest";
+      digest: NonNullable<SessionEntry["observerDigest"]>;
+      sessionId?: string;
+    }
+  | { kind: "activity-summary"; summary: SessionActivitySummary; sessionKey: string }
   | { kind: "ambient-transcript-watermark"; watermark: AmbientTranscriptWatermarkUpdate }
   | {
       kind: "ensure-identity";
       sessionId: string;
       creation: ReturnType<typeof buildSessionCreationStamp>;
-    }
-  | {
-      kind: "restart-admission";
-      sessionId: string;
-      expectedSessionState: SessionTranscriptTurnExpectedState;
-      patch: SessionTranscriptTurnLifecyclePatch;
     }
   | {
       kind: "pending-final-clear";
@@ -87,6 +107,7 @@ type SessionEntryPatchStep = (
       recoverySourceRunId?: string;
       executionRunId: string;
       executionGeneration: string;
+      terminalRunId?: string;
     }
   | {
       kind: "compaction-accounting";
@@ -102,6 +123,7 @@ export type SessionEntryPatchOperation =
 export function projectSessionEntryPatch(
   params: Omit<Parameters<typeof mergeSessionEntryPatch>[0], "patch"> & {
     operation: SessionEntryPatchOperation;
+    onLifecycleProjection?: (effects: SessionLifecyclePatchEffects | undefined) => void;
   },
 ): SessionEntry | undefined {
   const operations =
@@ -110,7 +132,12 @@ export function projectSessionEntryPatch(
   let writeBase = params.writeBase;
   let next: SessionEntry | undefined;
   for (const operation of operations) {
-    const patch = reduceSessionEntryPatch(operation, writeBase, existing);
+    const patch = reduceSessionEntryPatch(
+      operation,
+      writeBase,
+      existing,
+      params.onLifecycleProjection,
+    );
     if (patch === null) {
       continue;
     }
@@ -153,10 +180,11 @@ export function reduceSessionBookkeeping(
   return reducer satisfies never;
 }
 
-function reduceSessionEntryPatch(
+export function reduceSessionEntryPatch(
   operation: SessionEntryPatchStep,
   entry: SessionEntry,
   existingEntry: SessionEntry | undefined,
+  onLifecycleProjection?: (effects: SessionLifecyclePatchEffects | undefined) => void,
 ): Partial<SessionEntry> | null {
   const expected = operation.expected;
   const expectedEntry = operation.kind === "public-fields" ? existingEntry : entry;
@@ -176,6 +204,23 @@ function reduceSessionEntryPatch(
     return null;
   }
   switch (operation.kind) {
+    case "lifecycle": {
+      const projection = projectSessionLifecyclePatch(entry, operation.lifecycle);
+      onLifecycleProjection?.(projection.patch ? projection.effects : undefined);
+      return projection.patch;
+    }
+    case "inbound-metadata": {
+      const patch = projectSessionMetaPatch({
+        prepared: operation.metadata,
+        existing: existingEntry,
+        sessionKey: operation.sessionKey,
+      });
+      return existingEntry ? patch : { ...operation.creation, ...patch };
+    }
+    case "last-route": {
+      const patch = projectLastRoutePatch({ ...operation.route, existing: existingEntry });
+      return existingEntry ? patch : { ...operation.creation, ...patch };
+    }
     case "ensure-identity":
       return existingEntry?.sessionId
         ? null
@@ -186,20 +231,34 @@ function reduceSessionEntryPatch(
       return operation.patch;
     case "public-fields":
       return preserveGenerationPrivateFields(entry, operation.patch);
+    case "observer-digest": {
+      const { digest, sessionId } = operation;
+      const hasSessionIdentity = sessionId !== undefined || digest.sessionId !== undefined;
+      if (
+        (sessionId !== undefined && entry.sessionId !== sessionId) ||
+        (digest.sessionId !== undefined && entry.sessionId !== digest.sessionId) ||
+        ((hasSessionIdentity || digest.lifecycleRevision !== undefined) &&
+          entry.lifecycleRevision !== digest.lifecycleRevision) ||
+        (resolveSessionObserverDigestForLifecycle(entry.observerDigest, entry)?.revision ?? 0) >=
+          digest.revision
+      ) {
+        return null;
+      }
+      return { observerDigest: digest };
+    }
+    case "activity-summary": {
+      const { summary } = operation;
+      return entry.initializationPending ||
+        isSubagentSessionRow(operation.sessionKey, entry) ||
+        entry.sessionId !== summary.sessionId ||
+        entry.lifecycleRevision !== summary.lifecycleRevision
+        ? null
+        : { activitySummary: summary };
+    }
     case "ambient-transcript-watermark":
       return projectAmbientTranscriptWatermark(entry, operation.watermark);
     case "compaction-accounting":
       return projectCompactionAccountingPatch(entry, operation.accounting);
-    case "restart-admission":
-      return sessionMatchesExpectedTranscriptTurn(
-        { entry },
-        {
-          expectedSessionId: operation.sessionId,
-          expectedSessionState: operation.expectedSessionState,
-        },
-      )
-        ? operation.patch
-        : null;
     case "pending-final-clear": {
       const recoveryRunId = normalizeOptionalString(entry.restartRecoveryDeliveryRunId);
       const deliveries = entry.pendingFinalDelivery?.deliveries;
@@ -283,7 +342,9 @@ function reduceSessionEntryPatch(
           entry,
           recordTerminalSource: true,
           terminalSourceRunId: operation.recoverySourceRunId,
-          terminalRunId: entry.restartRecoveryDeliveryRunId ? undefined : operation.executionRunId,
+          terminalRunId:
+            operation.terminalRunId ??
+            (entry.restartRecoveryDeliveryRunId ? undefined : operation.executionRunId),
         }),
         restartRecoveryRuns: remainingRuns?.length ? remainingRuns : undefined,
         ...(terminalPending ? { pendingFinalDelivery: undefined } : {}),
@@ -307,7 +368,7 @@ function reduceSessionEntryPatch(
               status: terminalPending ? ("failed" as const) : ("done" as const),
             }
           : {}),
-        updatedAt: endedAt ?? Date.now(),
+        updatedAt: endedAt ?? entry.updatedAt,
       };
     }
   }

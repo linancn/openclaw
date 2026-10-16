@@ -5,12 +5,15 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveBuildInfo } from "../write-build-info.ts";
 import { createManagedHandoffBuildConfigs } from "./managed-handoff-build-config.mts";
+import { createPublicSessionCardAssetsPlugin } from "./public-session-card-assets.mts";
 import { collectRuntimeImportClosure } from "./runtime-import-closure.mts";
 import {
+  getStandaloneRuntimeProcessOutputOptions,
   sharedRuntimeProcessBuildEntries,
   shouldBundleRuntimeSqliteDependency,
   standaloneRuntimeProcessBuildEntries,
 } from "./runtime-process-core-build-entries.mts";
+import { createSqliteSchemaAssetsPlugin } from "./sqlite-schema-assets.mts";
 import { createStateSchemaInlinePlugin } from "./state-schema-inline-plugin.mts";
 import {
   hashVitestWorkerArtifact,
@@ -109,10 +112,14 @@ async function compileVitestWorkerArtifacts(directory: string): Promise<void> {
   const shouldBundleWorkspaceDependency = (id: string) =>
     (id.startsWith("@openclaw/") || id.startsWith("openclaw/")) &&
     id !== "@openclaw/fs-safe" &&
-    !id.startsWith("@openclaw/fs-safe/");
+    !id.startsWith("@openclaw/fs-safe/") &&
+    id !== "@openclaw/proc-safe" &&
+    !id.startsWith("@openclaw/proc-safe/");
   const createInputPlugins = (outputPrefix: string) => {
     const schemaPlugin = createStateSchemaInlinePlugin(root);
     return [
+      createPublicSessionCardAssetsPlugin(root, recordInput),
+      createSqliteSchemaAssetsPlugin(root, recordInput),
       {
         ...schemaPlugin,
         name: "openclaw:worker-build-inputs",
@@ -306,7 +313,7 @@ async function compileVitestWorkerArtifacts(directory: string): Promise<void> {
       await build({
         ...config,
         entry: { [name]: source },
-        outputOptions: { codeSplitting: false },
+        outputOptions: getStandaloneRuntimeProcessOutputOptions(name),
       });
     }
     reportPhase("standalone workers compiled");
